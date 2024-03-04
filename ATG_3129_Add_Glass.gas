@@ -1,0 +1,496 @@
+Program.Sub.ScreenSU.Start
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+
+Variable.Global.FileLoc.Declare(String)
+Program.External.Include.Library("RtrUploadUPLRTRHR.lib")
+Variable.Global.iRtrMult.Declare(Long,0)
+Variable.Global.sLog.Declare(String)
+Variable.Global.iBomMult.Declare(Long,100)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Coded by: SMC
+'Project Start Date: 5/11/2011
+'Hooks:
+'  Custom Menu Item
+'Notes:
+'  Quote 2399 (Adding Glass To Boms & Routers) - Custom Window
+'
+'  Description:
+'  A spreadsheet upload will be created for the purposes of adding glass to Boms and Routers.
+'
+'  Spec:
+'  The program will read the second sheet of the selected Spreadsheet (See attached).
+'
+'  Before reading the sheet, the program will verify that Cell A1 reads 'READY'.  This cell checks to make sure the spreadsheet passes certain error checks.  If it does not read READY, notify the user and halt the upload.
+'
+'  The sheet will contain 4 pieces of information:  Part Number, Description, Qty, and Cost.  Glas to be uploaded begins at row 4.  If the part does not exist, it needs to be automatically created with the AddPartToPatch and PostPartBatch commands
+'  (where the last parameter is "NOMAINT " to not display the Inventory Master).
+'
+'  The Description, Qty, and Cost will be written and/or updated (if the part already exists) on the Inventory Master record.
+'
+'  After the part has been created or updated, it will be appended to the appropriate Bom and Router.  The Bom/Router it needs to be uploaded to is the combination of the job and mark which can be retrieved from the part name.  The Job is the 3rd
+'  through 9th characters, and the Mark is the last 4 characters (after removing any leading zeroes).
+'
+'  For example, from the part FG3232200070100A1:
+'  Job:  3232200
+'  Mark:  A1 (minus two leading zeros)
+'  Bom and Router the part needs to be appended to:  32322000A1
+
+'F.Intrinsic.Debug.InvokeDebugger
+F.Intrinsic.Debug.Stop
+
+F.ODBC.Connection!Conx.OpenConnection(V.Ambient.PDSN,V.Ambient.PUser,V.Ambient.PPass)
+Function.Intrinsic.UI.ShowOpenFileDialog("","*.xls","",Variable.Global.FileLoc)
+F.Intrinsic.UI.InvokeWaitDialog("Reading spreadsheet...")
+F.Intrinsic.Control.CallSub(Read_sheet)
+F.Intrinsic.UI.CloseWaitDialog
+F.Intrinsic.Control.CallSub(Unload)
+
+Program.Sub.Main.End
+
+Program.Sub.Read_Sheet.Start
+V.Local.bRet.Declare(Boolean)
+V.Local.bExcel.Declare(Boolean,False)
+V.Local.sXLS.Declare(String)
+
+V.Local.sError.Declare(String)
+
+F.Intrinsic.Control.SetErrorHandler("Read_Sheet_Err")
+F.Intrinsic.Control.ClearErrors
+
+F.Intrinsic.Control.If(V.Global.FileLoc,=,"***CANCEL***")
+	F.Intrinsic.Control.ExitSub
+F.Intrinsic.Control.EndIf
+
+F.Automation.MSExcel.CheckPresence(V.Local.bRet)
+F.Intrinsic.Control.If(V.Local.bRet,=,True)
+'	F.Automation.MSExcel.ReadSpreadsheet(V.Screen.F_Update_Price!txtSpreadsheet.Text,2,101,V.Local.sXLS)
+	F.Automation.MSExcel.ReadSpreadsheet(V.Global.FileLoc,1,1,V.Local.sXLS)
+	V.Local.bExcel.Set(True)
+F.Intrinsic.Control.Else
+	F.Automation.OOGeneral.CheckPresence(V.Local.bRet)
+	F.Intrinsic.Control.If(V.Local.bRet,=,True)
+'		F.Automation.OOCalc.ReadSpreadsheet(V.Screen.F_Update_Price!txtSpreadsheet.Text,False,2,101,V.Local.sXLS)
+		F.Automation.OOCalc.ReadSpreadsheet(V.Global.FileLoc,False,1,1,V.Local.sXLS)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.UI.Msgbox("Microsoft Excel or OOCalc required to execute .xls import")
+		F.Intrinsic.UI.CloseWaitDialog
+		F.Intrinsic.Control.ExitSub
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Split(V.Local.sXLS,"&^&",V.Local.sXLS)
+F.Intrinsic.Control.If(V.Local.sXLS.UBound,<,1)
+	F.Intrinsic.UI.Msgbox("This is an invalid spreadsheet.  Cell A1 must read 'READY' on the second sheet.","Invalid Spreadsheet")
+	F.Intrinsic.Control.ExitSub
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Trim(V.Local.sXLS(1).UCase,V.Local.sXLS(1))
+F.Intrinsic.Control.If(V.Local.sXLS(1),<>,"READY")
+	F.Intrinsic.UI.Msgbox("This is an invalid spreadsheet.  Cell A1 must read 'READY' on the second sheet.","Invalid Spreadsheet")
+	F.Intrinsic.Control.ExitSub
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.If(V.Local.bExcel,=,True)
+	F.Automation.MSExcel.ReadSpreadsheet(V.Global.FileLoc,5,10000,V.Local.sXLS)
+F.Intrinsic.Control.Else
+	F.Automation.OOCalc.ReadSpreadsheet(V.Global.FileLoc,False,5,10000,V.Local.sXLS)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Split(V.Local.sXLS,"&^&",V.Local.sXLS)
+F.Intrinsic.Control.CallSub(Process_glass,"Sheet",V.Local.sXLS(1))
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Read_Sheet_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+Program.Sub.Read_Sheet.End
+
+Program.Sub.Unload.Start
+f.ODBC.Connection!conx.Close
+f.Intrinsic.Control.End
+
+Program.Sub.Unload.End
+
+Program.Sub.Process_Glass.Start
+V.Local.sSheet.Declare(String)
+V.Local.sCols.Declare(String)
+V.Local.iR.Declare(Long)
+V.Local.sError.Declare(String)
+V.Local.sJob.Declare(String)
+V.Local.sMsg.Declare(String)
+V.Local.sMark.Declare(String)
+V.Local.sSQL.Declare(String)
+V.Local.sFile.Declare(String)
+V.Local.iRet.Declare(Long)
+V.Local.sRet.Declare(String)
+
+F.Intrinsic.Control.SetErrorHandler("Process_Glass_Err")
+F.Intrinsic.Control.ClearErrors
+
+F.Intrinsic.Control.CallSub(Routerclear)
+F.Intrinsic.Control.CallSub(Get_bom_multiplier)
+F.Intrinsic.Control.CallSub(Get_rtr_multiplier)
+
+F.Intrinsic.String.Split(V.args.Sheet,"$!$",V.Local.sSheet)
+F.Intrinsic.Control.For(V.Local.iR,3,V.Local.sSheet.UBound,1)
+	F.Intrinsic.String.Split(V.Local.sSheet(v.Local.iR),"*!*",V.Local.sCols)
+	F.Intrinsic.String.Mid(V.Local.sCols(0),3,7,V.Local.sJob)
+	F.Intrinsic.String.Right(V.Local.sCols(0),4,V.Local.sMark)
+	F.Intrinsic.Control.CallSub(Removelead0s,"String",V.Local.sMark)
+	F.Intrinsic.String.Concat(V.Local.sJob,V.Args.String,V.Local.sMark)
+
+	F.Intrinsic.String.Concat("Adding ",V.Local.sCols(0)," to ",V.Local.sMark,"...",V.Local.sMsg)
+	F.Intrinsic.UI.ChangeWaitStatus(V.Local.sMsg,V.Local.iR,3,V.Local.sSheet.UBound)
+
+	F.Intrinsic.Control.CallSub(Create_part,"Part",V.Local.sCols(0),"Desc",V.Local.sCols(1),"Cost",V.Local.sCols(3))
+	F.Intrinsic.Control.CallSub(Append_to_bom,"Mark",V.Local.sMark,"Part",V.Local.sCols(0),"Desc",V.Local.sCols(1),"Cost",V.Local.sCols(3),"Qty",V.Local.sCols(2))
+	F.Intrinsic.Control.CallSub(Get_rtr_seq,"Mark",V.Local.sMark)
+
+	F.Intrinsic.Control.If(V.Args.Seq,=,-1)
+		F.Intrinsic.Control.CallSub(Write_log_line,"Mark",V.Local.sMark,"Part",V.Local.sCols(0),"Text","Please create Router")
+	F.Intrinsic.Control.Else
+'		F.Intrinsic.Debug.InvokeDebugger
+		F.Intrinsic.Debug.Stop
+		F.Intrinsic.Control.CallSub(Routeraddrecord,"Number",V.Local.sMark,"Part",V.Local.sCols(0),"Runtime",V.Local.sCols(2),"UM","EA","LMO","M","PL","RG","Comment","","Workcenter","","Overlap","","Frequency","","Sequence",V.Args.Seq,"Rate",V.Local.sCols(3),"Cust","","Seq_Desc",V.Local.sCols(1))
+	F.Intrinsic.Control.EndIf
+	F.Intrinsic.Debug.Stop
+F.Intrinsic.Control.Next(V.Local.iR)
+
+'F.Intrinsic.Debug.InvokeDebugger
+F.Intrinsic.Debug.Stop
+F.Intrinsic.UI.Msgbox("Glass has been added to BOMs.  Do you want to update routers?","Router Update",4,V.Local.sRet)
+F.Intrinsic.Control.If(V.Local.sRet,=,6)
+	F.Intrinsic.Control.CallSub(Routergenerate)
+	F.Intrinsic.Control.CallSub(Built_from_bom)
+F.Intrinsic.Control.EndIf
+F.Intrinsic.UI.Msgbox("Import Complete.")
+'FIXBOM - Updates Routers with the material on the BOM and puts it with the material - Wouldn't need to add anything to the router - There is not currently a callwrapper for this, but an option if we run into issues
+
+F.Intrinsic.Control.If(V.Global.sLog,<>,"")
+	F.Intrinsic.String.Concat(V.Caller.TempDir,"\Add_Glass_Log.txt",V.Local.sFile)
+	F.Intrinsic.File.String2File(V.Local.sFile,V.Global.sLog)
+	F.Intrinsic.File.GetHandle(V.Local.iRet)
+	F.Intrinsic.Task.ShellExec(V.Caller.Handle,"OPEN",V.Local.sFile,"","",5)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Process_Glass_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+Program.Sub.Process_Glass.End
+
+Program.Sub.Create_Part.Start
+V.Local.sSQL.Declare(String)
+
+F.Intrinsic.String.Concat("SELECT PART FROM INVENTORY_MSTR WHERE PART='",V.Args.Part,"'",V.Local.sSQL)
+F.ODBC.Connection!Conx.OpenRecordsetRW("rstPart",V.Local.sSQL)
+F.Intrinsic.Control.If(V.ODBC.Conx!rstPart.EOF,<>,True)
+	F.ODBC.Conx!rstPart.Close
+	f.Intrinsic.Control.ExitSub
+F.Intrinsic.Control.EndIf
+F.ODBC.Conx!rstPart.Close
+
+F.Global.Inventory.CreatePart(V.Args.Part,"EA",V.Args.Desc,"","RG","J","","",0,"NOMAINT ")
+F.Intrinsic.String.Concat("SELECT AMT_COST FROM INVENTORY_MSTR WHERE PART='",V.Args.Part,"'",V.Local.sSQL)
+F.ODBC.Connection!Conx.OpenRecordsetRW("rstPart",V.Local.sSQL)
+F.Intrinsic.Control.If(V.ODBC.Conx!rstPart.EOF,<>,True)
+	F.ODBC.Conx!rstPart.Set!AMT_COST(V.Args.Cost)
+	F.ODBC.Conx!rstPart.Update
+F.Intrinsic.Control.EndIf
+F.ODBC.Conx!rstPart.Close
+
+Program.Sub.Create_Part.End
+
+Program.Sub.RemoveLead0s.Start
+V.Local.sString.Declare(String)
+V.Local.sTemp.Declare(String)
+V.Local.iC.Declare(Long)
+V.Local.iChars.Declare(Long,0)
+V.Local.sChar.Declare(String,"0")
+
+V.Local.sString.Set(V.Args.String)
+F.Intrinsic.String.Trim(V.Local.sString,V.Local.sString)
+F.Intrinsic.Control.For(V.Local.iC,1,V.local.sString.length,1)
+	F.Intrinsic.String.Mid(V.Local.sString,V.Local.iC,1,V.Local.sTemp)
+	F.Intrinsic.Control.If(V.Local.sTemp,=,"0")
+		F.Intrinsic.Math.Add(V.Local.iChars,1,V.Local.iChars)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.Control.ExitFor(V.Local.iC)
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Next(V.Local.iC)
+
+F.Intrinsic.Math.Sub(V.Local.sString.Length,V.Local.iChars,V.Local.iC)
+F.Intrinsic.String.Right(V.Local.sString,V.Local.iC,V.Local.sString)
+
+F.Intrinsic.Variable.AddRV("String",V.Local.sString)
+
+Program.Sub.RemoveLead0s.End
+
+Program.Sub.Get_Rtr_Multiplier.Start
+V.Local.sSQL.Declare(String)
+
+V.Local.sSql.Set("Select MULT_FACTOR from OPT_RES_COM where FUNCT = 'RS' and TYPE = 'CO' and FILLER = ''")
+F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.sSql)
+V.Global.iRtrMult.Set(V.ODBC.conx!rst.FieldValTrim!MULT_FACTOR)
+F.ODBC.conx!rst.Close
+
+Program.Sub.Get_Rtr_Multiplier.End
+
+Program.Sub.Get_Rtr_Seq.Start
+V.Local.sSQL.Declare(String)
+V.Local.iOp.Declare(Long)
+V.Local.iMod.Declare(Long)
+V.Local.sRet.Declare(String)
+V.Local.iMax.Declare(Long)
+V.Local.iC.Declare(Long)
+
+'F.Intrinsic.Variable.UDTSeek(V.uGlobal.uRtr!Number,V.Args.Mark,2,V.Local.sRet)
+'F.Intrinsic.Debug.InvokeDebugger
+'F.Intrinsic.Debug.Stop
+'F.Intrinsic.Control.If(V.Local.sRet,=,"")
+	F.Intrinsic.String.Concat("Select TOP 1 LINE_ROUTER from ROUTER_LINE where ROUTER = '",V.Args.Mark,"' ORDER BY LINE_ROUTER DESC",V.Local.sSql)
+	F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.sSql)
+	F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,True)
+		F.Intrinsic.String.Concat("SELECT ROUTER FROM ROUTER_HEADER WHERE ROUTER='",V.args.Mark,"'",V.local.sSQL)
+		F.ODBC.Connection!Conx.OpenRecordsetRO("rstRouter",V.Local.sSQL)
+		F.Intrinsic.Control.If(V.ODBC.Conx!rstRouter.EOF,=,True)
+			V.Local.iOp.Set(-1)
+		F.Intrinsic.Control.Else
+			V.Local.iOp.Set(V.Global.iRtrMult)
+		F.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Else
+		V.Local.iOp.Set(V.ODBC.conx!rst.FieldValTrim!LINE_ROUTER)
+		F.Intrinsic.Math.Mod(V.Local.iOp,V.Global.iRtrMult,V.Local.iMod)
+		F.Intrinsic.Control.If(V.Local.iMod,<>,0)
+			F.Intrinsic.Math.Sub(V.Local.iOp,V.Local.iMod,V.Local.iOp)
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.Math.Add(V.Local.iOp,V.Global.iRtrMult,V.Local.iOp)
+	F.Intrinsic.Control.EndIf
+	F.ODBC.conx!rst.Close
+'F.Intrinsic.Control.Else
+'	F.Intrinsic.Debug.InvokeDebugger
+'	F.Intrinsic.Debug.Stop
+'	F.Intrinsic.String.Split(V.Local.sRet,"*!*",V.Local.sRet)
+'	F.Intrinsic.Control.For(V.Local.iC,0,V.Local.sRet.UBound,1)
+'		F.Intrinsic.Control.If(V.uGlobal.uRtr(v.Local.sRet(v.Local.iC))!Sequence,>,V.Local.iMax)
+'			V.Local.iMax.Set(V.uGlobal.uRtr(v.Local.sRet(v.Local.iC))!Sequence)
+'		F.Intrinsic.Control.EndIf
+'	F.Intrinsic.Control.Next(V.Local.iC)
+'	F.Intrinsic.Math.Add(V.Local.iMax,V.Global.iRtrMult,V.Local.iOp)
+'F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.CallSub(Correct_rtr_seq,"Mark",V.Args.Mark,"Seq",V.Local.iOp)
+
+'F.Intrinsic.Variable.AddRV("Seq",V.Local.iOp)
+f.Intrinsic.Variable.AddRV("Seq",V.Args.Seq)
+
+Program.Sub.Get_Rtr_Seq.End
+
+Program.Sub.Write_Log_Line.Start
+F.Intrinsic.Control.If(V.Global.sLog,=,"")
+	F.Intrinsic.String.Concat("Unable to add ",V.Args.Part," to ",V.Args.Mark,".  ",V.Args.Text,V.Global.sLog)
+F.Intrinsic.Control.Else
+	F.Intrinsic.String.Concat(V.Global.sLog,V.Ambient.NewLine,"Unable to add ",V.Args.Part," to ",V.Args.Mark,".  ",V.Args.Text,V.Global.sLog)
+F.Intrinsic.Control.EndIf
+
+Program.Sub.Write_Log_Line.End
+
+Program.Sub.Get_Bom_Seq.Start
+V.Local.sSQL.Declare(String)
+V.Local.iOp.Declare(Long)
+V.Local.iMod.Declare(Long)
+
+F.Intrinsic.String.Concat("Select TOP 1 SEQUENCE_BOM from BOM_MSTR where PARENT = '",V.Args.Mark,"' ORDER BY SEQUENCE_BOM DESC",V.Local.sSql)
+F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.sSql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,True)
+	V.Local.iOp.Set(-1)
+F.Intrinsic.Control.Else
+	F.Intrinsic.Math.Add(V.ODBC.conx!rst.FieldValTrim!SEQUENCE_BOM,V.Global.iBomMult,V.Local.iOp)
+F.Intrinsic.Control.EndIf
+F.ODBC.conx!rst.Close
+
+F.Intrinsic.Variable.AddRV("Seq",V.Local.iOp)
+
+
+Program.Sub.Get_Bom_Seq.End
+
+Program.Sub.Get_Bom_Multiplier.Start
+'gets BOM multiplier
+V.Local.sSQL.Declare(String)
+V.Local.iMult.Declare(Long)
+
+'F.Intrinsic.Debug.InvokeDebugger
+F.Intrinsic.Debug.Stop
+V.Local.sSql.Set("Select DISTINCT SEQUENCE_BOM from BOM_MSTR where SEQUENCE_BOM<>'0000' ORDER BY SEQUENCE_BOM DESC")
+F.ODBC.Connection!conx.OpenRecordsetRO("rst",V.Local.sSql)
+'V.Global.iRtrMult.Set(V.ODBC.conx!rst.FieldValTrim!MULT_FACTOR)
+F.Intrinsic.Control.DoUntil(V.ODBC.conx!rst.EOF,=,True)
+	F.Intrinsic.Control.If(V.Local.iMult,=,0)
+		V.Local.iMult.Set(V.ODBC.Conx!rst.FieldVal!SEQUENCE_BOM)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.Math.Sub(V.Local.iMult,V.ODBC.Conx!rst.FieldVal!SEQUENCE_BOM,V.Local.iMult)
+		F.Intrinsic.Control.ExitDo
+	F.Intrinsic.Control.EndIf
+	F.ODBC.Conx!rst.MoveNext
+F.Intrinsic.Control.Loop
+F.ODBC.conx!rst.Close
+
+V.Global.iBomMult.Set(V.Local.iMult)
+
+Program.Sub.Get_Bom_Multiplier.End
+
+Program.Sub.Append_To_Bom.Start
+V.Local.sSQL.Declare(String)
+V.Local.sDate.Declare(String)
+
+F.Intrinsic.Control.CallSub(Get_bom_seq,"Mark",V.Args.Mark)
+F.Intrinsic.Control.If(V.Args.Seq,=,-1)
+	F.Intrinsic.Control.CallSub(Write_log_line,"Part",V.Args.Part,"Mark",V.Args.Mark,"Text","Please create BOM.")
+	F.Intrinsic.Control.ExitSub
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Concat("Select * from BOM_MSTR where PARENT = '",V.Args.Mark,"' AND PART='",V.Args.Part,"' ORDER BY SEQUENCE_BOM DESC",V.Local.sSql)
+F.ODBC.Connection!conx.OpenRecordsetRW("rst",V.Local.sSql)
+F.Intrinsic.Control.If(V.ODBC.conx!rst.EOF,=,True)
+	F.Intrinsic.String.Concat("SELECT * FROM BOM_ENG WHERE PART='",V.Args.Part,"'",V.Local.sSQL)
+	F.ODBC.Connection!Conx.OpenRecordsetRW("rstBom",V.Local.sSQL)
+	F.Intrinsic.Control.If(V.ODBC.Conx!rstBom.EOF,=,True)
+		F.ODBC.Conx!rstBom.AddNew
+		F.ODBC.Conx!rstBom.Set!PART(V.Args.part)
+		F.ODBC.Conx!rstBom.Set!Description(V.Args.Desc)
+		F.ODBC.Conx!rstBom.Set!DATE_REVISION("000000")
+		F.ODBC.Conx!rstBom.Set!IS_PARENT("N")
+		F.ODBC.Conx!rstBom.Update
+	F.Intrinsic.Control.EndIf
+	F.ODBC.Conx!rstBom.Close
+
+	F.ODBC.Conx!rst.AddNew
+	F.ODBC.Conx!rst.Set!PARENT(V.Args.Mark)
+	F.ODBC.Conx!rst.Set!SEQUENCE_BOM(V.Args.Seq)
+	F.ODBC.Conx!rst.Set!INSERT_BOM("00")
+	F.Intrinsic.String.Format(V.Ambient.Now,"YYMMDD",V.Local.sDate)
+	F.ODBC.Conx!rst.Set!DATE_MAINTENANCE(V.Local.sDate)
+	F.ODBC.Conx!rst.Set!COST(V.Args.Cost)
+	F.ODBC.Conx!rst.Set!QUANTITY(V.Args.QTY)
+	F.ODBC.Conx!rst.Set!PART(V.Args.Part)
+	F.ODBC.Conx!rst.Set!DATE_START("000000")
+	F.ODBC.Conx!rst.Set!DATE_STOP("000000")
+	F.ODBC.Conx!rst.Set!UM_INVENTORY("EA")
+	F.ODBC.Conx!rst.Set!ORDR_USR_FLAG("N")
+'	F.Intrinsic.Control.CallSub(Get_bom_vals,"Mark",V.Args.Mark,"Qty",V.Args.Qty)
+'	F.ODBC.Conx!rst.Set!QUANTITY_6(V.Args.TotQty)
+	F.ODBC.Conx!rst.Set!QUANTITY_6(V.Args.QTY)
+	F.ODBC.Conx!rst.Set!SOURCE("J")
+	F.ODBC.Conx!rst.Set!FREQUENCY("0")
+	F.Intrinsic.String.Format(V.Ambient.Now,"YYYYMMDD",V.Local.sDate)
+	F.ODBC.Conx!rst.Set!DATE_LAST_CHG(V.Local.sDate)
+	F.Intrinsic.String.Format(V.Ambient.Now,"HHNNSS",V.Local.sDate)
+	F.Intrinsic.String.Concat(V.Local.sDate,"00",V.Local.sDate)
+	F.ODBC.Conx!rst.Set!TIME_LAST_CHG(V.Local.sDate)
+	F.ODBC.Conx!rst.Set!LAST_CHG_BY(V.Caller.User)
+	F.ODBC.Conx!rst.Set!LAST_CHG_PROG("")
+	F.ODBC.Conx!rst.Set!COST_DATE("00000000")
+
+	F.ODBC.Conx!rst.Update
+F.Intrinsic.Control.EndIf
+F.ODBC.conx!rst.Close
+
+Program.Sub.Append_To_Bom.End
+
+Program.Sub.Get_Bom_Vals.Start
+V.Local.sSQL.Declare(String)
+V.Local.fQty.Declare(Float)
+
+F.Intrinsic.String.Concat("Select QUANTITY from BOM_MSTR where PARENT = '",V.Args.Mark,"' AND SEQUENCE_BOM='0000' ORDER BY SEQUENCE_BOM DESC",V.Local.sSql)
+F.ODBC.Connection!conx.OpenRecordsetRO("rstBom",V.Local.sSql)
+F.Intrinsic.Control.If(V.ODBC.conx!rstBom.EOF,=,True)
+	V.Local.fQty.Set(V.Args.Qty)
+F.Intrinsic.Control.Else
+	F.Intrinsic.Math.Mult(V.ODBC.conx!rstBom.FieldValTrim!QUANTITY,V.Args.Qty,V.Local.fQty)
+F.Intrinsic.Control.EndIf
+F.ODBC.conx!rstBom.Close
+
+F.Intrinsic.Variable.AddRV("TotQty",V.Local.fQty)
+
+
+
+Program.Sub.Get_Bom_Vals.End
+
+Program.Sub.Correct_Rtr_Seq.Start
+'This adds more multipliers based on how many times Mark is found in the Array.  This takes into consideration multiple Glass pieces being added to same Mark before RtrGenerate
+
+V.Static.bInit.Declare(Boolean)
+V.Static.sMarks.Declare(String)
+V.Local.iUB.Declare(Long)
+V.Local.iC.Declare(Long)
+V.Local.iCount.Declare(Long,0)
+V.Local.iSeq.Declare(Long)
+
+F.Intrinsic.Control.If(V.Static.bInit,=,False)
+	V.Static.sMarks.Redim(-1,-1)
+	V.Static.bInit.Set(True)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.For(V.Local.iC,0,V.Static.sMarks.UBound,1)
+	F.Intrinsic.Control.If(V.Static.sMarks(v.Local.iC),=,V.Args.Mark)
+		F.Intrinsic.Math.Add(V.Local.iCount,1,V.Local.iCount)
+'		F.Intrinsic.Debug.InvokeDebugger
+		F.Intrinsic.Debug.Stop
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Next(V.Local.iC)
+
+F.Intrinsic.Math.Mult(V.Local.iCount,V.Global.iRtrMult,V.Local.iSeq)
+F.Intrinsic.Math.Add(V.Args.Seq,V.Local.iSeq,V.Local.iSeq)
+
+F.Intrinsic.Math.Add(V.Static.sMarks.UBound,1,V.Local.iUB)
+F.Intrinsic.Control.If(V.Local.iUB,=,0)
+	V.Static.sMarks.Redim(0,0)
+F.Intrinsic.Control.Else
+	V.Static.sMarks.RedimPreserve(0,V.Local.iUB)
+F.Intrinsic.Control.EndIf
+V.Static.sMarks(v.Local.iUB).Set(V.Args.Mark)
+
+F.Intrinsic.Variable.AddRV("Seq",V.Local.iSeq)
+
+Program.Sub.Correct_Rtr_Seq.End
+
+Program.Sub.Built_From_BOM.Start
+'Goes through and updates the BUILT_FROM_BOM flag on ROUTER_LINES.  If this is not flagged, the material is duplicated if the Router is rebuilt from the BOM.
+
+V.Local.iC.Declare(Long)
+V.Local.sQuery.Declare(String)
+V.Local.sError.Declare(String)
+
+F.Intrinsic.Control.SetErrorHandler("Built_From_BOM_Err")
+F.Intrinsic.Control.ClearErrors
+
+'F.Intrinsic.Debug.InvokeDebugger
+F.Intrinsic.Control.For(V.Local.iC,0,V.uGlobal.uRtr.UBound,1)
+	F.Intrinsic.String.Concat("UPDATE ROUTER_LINE SET BUILT_FROM_BOM='Y' WHERE ROUTER='",V.uGlobal.uRtr(v.Local.iC)!Number,"' AND LINE_ROUTER='",V.uGlobal.uRtr(v.Local.iC)!Sequence,"' AND PART_WC_OUTSIDE='",V.uGlobal.uRtr(v.Local.iC)!Part,"'",V.Local.sQuery)
+	F.Intrinsic.Debug.Stop
+	F.ODBC.Connection!Conx.Execute(V.Local.sQuery)
+F.Intrinsic.Control.Next(V.Local.iC)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Label("Built_From_BOM_Err")
+F.Intrinsic.Control.If(V.Ambient.ErrorNumber,<>,0)
+	Function.Intrinsic.String.Concat("Subroutine: ",V.Ambient.CurrentSubroutine,V.Ambient.NewLine,"Error Occurred ",V.Ambient.ErrorNumber," with description ",V.Ambient.ErrorDescription,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+Function.Intrinsic.Control.EndIf
+
+Program.Sub.Built_From_BOM.End
+
+
